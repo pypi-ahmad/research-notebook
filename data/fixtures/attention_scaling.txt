@@ -1,0 +1,14 @@
+Title: Scalability Bottlenecks in Multi-Head Attention Mechanisms
+Authors: Research Lab Core Team
+Date: 2026-03-15
+
+Abstract and summary:
+Standard Multi-Head Attention (MHA) scales quadratically with sequence length O(N^2), creating severe memory and computational bottlenecks when processing document contexts beyond 128K tokens. While FlashAttention-3 reduces memory I/O overhead by tiling intermediate key-value projections into SRAM, the quadratic complexity of global pairwise token interaction remains unchanged.
+
+Key empirical findings:
+1. "KV-cache memory allocation dominates generation costs, consuming up to 72% of total GPU VRAM in 512K context deployments."
+2. "Linear attention approximations and state-space models reduce per-step latency by 3.8x but suffer noticeable recall degradation on multi-needle retrieval benchmarks."
+3. "Hybrid architectures that combine sparse attention patterns with periodic global sink tokens achieve 98.4% needle recovery while cutting KV cache memory footprint by 45%."
+
+Limitations and open challenges:
+Long-context reasoning benchmarks show that naive context stuffing causes models to suffer from 'lost in the middle' degradation. Prefix caching and hierarchical retrieval ranking offer significantly higher precision than brute-force window expansion.

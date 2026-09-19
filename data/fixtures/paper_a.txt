@@ -1,0 +1,12 @@
+Title: Chronos Engine: KV Cache Retention in Long-Horizon Processing
+Authors: Chronos Research Group
+Date: 2026-05-12
+
+Abstract:
+The Chronos engine employs dedicated sink tokens and selective eviction to maintain KV-cache coherence over extended generation horizons. In rigorous long-context trials, Chronos achieved 99.1% needle recall while using exactly 16 sink tokens per attention layer. This selective retention protocol reduced peak VRAM consumption by 52% on 512K context benchmarks.
+
+Experimental Results:
+Chronos recorded an average retrieval latency of 4.3 milliseconds on synthetic multi-needle tasks. The authors observed that increasing sink token allocation beyond 16 tokens yielded diminishing returns, improving recall by less than 0.05% while adding memory pressure.
+
+Deployment Specifications:
+Chronos is deployed across 8x H100 GPU clusters using standard bfloat16 tensor representations. All eviction thresholds are computed statically during the initial prompt prefill phase.

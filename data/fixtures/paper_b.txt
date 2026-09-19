@@ -1,0 +1,12 @@
+Title: Project Aether: Speculative Decoding with Dynamic Quantization
+Authors: Helios System Laboratories
+Date: 2026-06-20
+
+Abstract:
+Project Aether introduces dynamic low-bit quantization for speculative draft verification in dense language models. By quantizing draft tokens to FP4 representations during verification phases, Aether reduced end-to-end verification latency by 4.2x compared to standard FP16 speculative baselines.
+
+System Metrics:
+In production evaluations across 300,000 queries, Aether achieved an acceptance rate of 82.4% for speculative draft sequences of length 5. Verification throughput peaked at 1,480 tokens per second on dual L40S accelerator nodes.
+
+Architectural Constraints:
+Aether requires dedicated FP4 tensor execution units and does not support architectures using legacy INT8 matrix multipliers. Dynamic calibration occurs asynchronously every 50 generation steps.
