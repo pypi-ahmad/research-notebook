@@ -1,0 +1,10 @@
+.env
+.venv/
+data/*
+!data/fixtures/
+__pycache__/
+.streamlit/secrets.toml
+*.pyc
+.pytest_cache/
+.code-review-graph/
+.codegraph/
