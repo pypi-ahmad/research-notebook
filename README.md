@@ -64,6 +64,7 @@ research-notebook/
 ├── run.cmd                # One-click Windows 11 launcher
 ├── requirements.txt       # Python dependencies
 ├── STATUS.md              # Implementation and verification log
+├── LICENSE                # MIT license
 ├── src/
 │   ├── __init__.py
 │   ├── agnes_client.py    # Agnes AI client configuration (agnes-3.0-flash)
@@ -88,3 +89,7 @@ Run the end-to-end smoke test suite from PowerShell:
 ```
 
 The test loads fixtures (`paper_a.txt`, `paper_b.txt`), indexes chunks in embedded Qdrant with payload `{source_id, chunk_id, text}`, verifies an Ask query only `paper_a` answers, confirms `data/cache/last_ask.json` and `data/cache/last_brief.md` exist, and validates the optional Web ON path with `web:` labels.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
