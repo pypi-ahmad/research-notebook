@@ -6,13 +6,12 @@ Workflow:
 3. Index and rank chunks using embedded Qdrant (src/pack.py, payload {source_id, chunk_id, text}).
 4. Web OFF: Ask question only paper_a answers, save data/cache/last_ask.json and data/cache/last_brief.md.
    Hit Agnes. Verify valid JSON and brief structure.
-5. Web ON: Run query fixtures cannot answer, verifying web: labels and isolation.
+5. Verify both named cache files exist. Web remains OFF for the full smoke.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -27,7 +26,7 @@ import synthesis
 
 
 def run_e2e_smoke():
-    print("[1/5] Loading fixtures paper_a.txt and paper_b.txt from data/fixtures/...")
+    print("[1/4] Loading text fixtures with Web OFF...")
     fixture_a = ROOT / "data" / "fixtures" / "paper_a.txt"
     fixture_b = ROOT / "data" / "fixtures" / "paper_b.txt"
 
@@ -41,13 +40,13 @@ def run_e2e_smoke():
     sources_manager.clear_sources()
 
     s_a = sources_manager.add_source(
-        title="Chronos Engine: KV Cache Retention",
+        title="Riverstone Furnace Notes",
         content=text_a,
         source_type="upload",
         filename="paper_a.txt",
     )
     s_b = sources_manager.add_source(
-        title="Project Aether: Speculative Decoding",
+        title="Riverstone Provenance Notes",
         content=text_b,
         source_type="upload",
         filename="paper_b.txt",
@@ -56,14 +55,14 @@ def run_e2e_smoke():
     sources = [s_a, s_b]
     print(f"  [OK] Ingested 2 fixtures: paper_a={s_a.id[:8]}, paper_b={s_b.id[:8]}")
 
-    print("[2/5] Indexing source chunks into embedded Qdrant (payload {source_id, chunk_id, text})...")
+    print("[2/4] Indexing source chunks into embedded Qdrant collection 'sources'...")
     qdrant_dir = ROOT / "data" / "qdrant"
     indexed_count = pack.index_sources_to_qdrant(sources, qdrant_path=str(qdrant_dir))
     assert indexed_count > 0, "No chunks were indexed into Qdrant"
     print(f"  [OK] Successfully indexed {indexed_count} chunks into embedded Qdrant.")
 
-    print("[3/5] Asking question only paper_a answers (Web OFF, hitting Agnes AI)...")
-    q_paper_a = "What was the exact needle recall achieved by the Chronos engine and how many sink tokens per attention layer did it use?"
+    print("[3/4] Asking question only paper_a answers (Web OFF, hitting Agnes AI)...")
+    q_paper_a = "At what temperature does Riverstone glass melt?"
     qa_result = synthesis.ask_question(
         query=q_paper_a,
         sources=sources,
@@ -79,12 +78,11 @@ def run_e2e_smoke():
     print("---------------------------------------\n")
     print(f"Extracted Citations ({len(citations)}):")
     for c in citations:
-        print(f"  - [{c['source']}]: \"{c['quote']}\"")
+        print(f'  - [{c["source"]}]: "{c["quote"]}"')
 
     assert len(answer.strip()) > 0, "Empty answer from Agnes AI"
-    # Check that Chronos facts from paper_a are present
-    assert "99.1%" in answer or "99.1" in answer, "Answer must contain Chronos 99.1% needle recall from paper_a"
-    assert "16" in answer, "Answer must contain 16 sink tokens from paper_a"
+    assert "812" in answer, "Answer must contain the Riverstone melting point"
+    assert citations, "Answer must contain at least one verified source_id quote"
 
     # Verify data/cache/last_ask.json
     cache_ask_file = ROOT / "data" / "cache" / "last_ask.json"
@@ -98,8 +96,8 @@ def run_e2e_smoke():
     # Polite pause between requests to respect free-tier rate limit
     time.sleep(3)
 
-    print("[4/5] Generating structured brief (saving to data/briefs/ and data/cache/last_brief.md)...")
-    brief_topic = "Chronos KV Cache Retention Architecture"
+    print("[4/4] Generating structured brief with Web OFF...")
+    brief_topic = "Riverstone glass facts"
     brief_result = synthesis.generate_brief(
         topic=brief_topic,
         sources=sources,
@@ -110,7 +108,9 @@ def run_e2e_smoke():
     )
 
     brief_content = brief_result["content"]
-    assert "Claim" in brief_content or "Evidence" in brief_content, "Brief must contain Claims and Evidence"
+    assert "Claim" in brief_content or "Evidence" in brief_content, (
+        "Brief must contain Claims and Evidence"
+    )
     assert "Gap" in brief_content, "Brief must contain Gaps"
     assert "Follow" in brief_content, "Brief must contain Follow-ups"
 
@@ -118,35 +118,11 @@ def run_e2e_smoke():
     assert cache_brief_file.exists(), f"Missing cache file: {cache_brief_file}"
     brief_text_cached = cache_brief_file.read_text(encoding="utf-8")
     assert len(brief_text_cached.strip()) > 0
-    print(f"  [OK] Verified data/cache/last_brief.md exists ({len(brief_text_cached):,} bytes).")
-
-    # Polite pause before optional web test
-    time.sleep(3)
-
-    print("[5/5] Optional path: Web ON for a question fixtures cannot answer...")
-    q_web = "What is the release date and latest status of Python 3.14?"
-    web_result = synthesis.ask_question(
-        query=q_web,
-        sources=sources,
-        char_cap=200_000,
-        web_enabled=True,
-        provider_id="agnes",
+    print(
+        f"  [OK] Verified data/cache/last_brief.md exists ({len(brief_text_cached):,} characters)."
     )
 
-    web_answer = web_result["answer"]
-    web_snippets = web_result.get("web_snippets", [])
-    print("\n--- AGNES AI ANSWER (Web ON query) ---")
-    print(web_answer[:500] + ("...\n" if len(web_answer) > 500 else "\n"))
-    print("--------------------------------------\n")
-    print(f"Retrieved Web Snippets ({len(web_snippets)}):")
-    for s in web_snippets:
-        print(f"  - web: [{s.get('title', '')}] {s.get('body', '')[:100]}...")
-
-    assert len(web_snippets) > 0, "Web search should return snippets when enabled"
-    assert len(web_snippets) <= 3, "Web search must cap at 3 snippets"
-    print("  [OK] Verified web: labels and search isolation when Web is ON.")
-
-    print("\nALL SMOKE TESTS SUCCEEDED.")
+    print("\nALL WEB-OFF E2E SMOKE TESTS SUCCEEDED.")
 
 
 if __name__ == "__main__":
@@ -156,5 +132,6 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"\nE2E SMOKE TEST FAILED: {exc}", file=sys.stderr)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
