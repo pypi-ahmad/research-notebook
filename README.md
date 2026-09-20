@@ -1,95 +1,81 @@
-# Research Notebook
+# Long-context Research Notebook
 
-Research Notebook is a desktop research assistant built with Streamlit for native Windows 11. It lets you collect reference materials, rank relevant passages with an embedded vector index, and run grounded question answering and synthesis briefs using the Agnes AI API.
+A native Windows 11 Streamlit app for collecting sources, finding relevant passages in embedded Qdrant, and writing grounded answers and research briefs with Agnes AI.
 
-## Requirements
+## Run on Windows
 
-- Windows 11 (native execution, no WSL2 or Docker required)
-- Python 3.14 or 3.13
-- An Agnes AI API key set as the `AGNESAI_API_KEY` user environment variable
+Set `AGNESAI_API_KEY` as a Windows user environment variable. The app reads the key from the process environment and never writes or displays it.
 
-## Quick start
-
-1. Open the repository at `D:\AI\Github\research-notebook`.
-2. Ensure `AGNESAI_API_KEY` is set in your user environment variables, or create a `.env` file from `.env.example`.
-3. Double-click `run.cmd` in Windows Explorer, or run it from PowerShell:
+From `D:\AI\Github\research-notebook`, run:
 
 ```cmd
 run.cmd
 ```
 
-On first launch, `run.cmd` verifies your `.env` configuration, creates a `.venv` virtual environment with `py -3`, installs packages from `requirements.txt`, and starts the Streamlit interface at `http://localhost:8501`.
+On the first run, if `.env` is absent, `run.cmd` copies `.env.example`, opens it in Notepad, and exits. Run `run.cmd` again to execute:
 
-## Navigation and workflow
-
-The interface is organized into four tabs:
-
-- Notebook: Shows storage statistics, context packing metrics, budget utilization, and the embedded Qdrant sync status.
-- Sources: Ingests reference materials. Supports direct text pasting, file uploads (PDF via PyMuPDF/pypdf, plain text, Markdown), and web page scraping via URL. Records are stored as JSON Lines in `data/sources/sources.jsonl`.
-- Ask: Answers user queries using ranked Qdrant chunks. Every answer pairs assertions with verbatim quotes and explicit source IDs in `[source_id: "quote"]` format, accompanied by an explicit citations list.
-- Brief: Generates structured synthesis briefs containing claims, evidence citations, identified gaps, and follow-up actions. Briefs are saved as Markdown files under `data/briefs/` and cached at `data/cache/last_brief.md`.
-
-## Context packing and the budget slider
-
-The default model, `agnes-3.0-flash`, advertises a 512,000 token context window. Even with this large capacity, context packing remains essential.
-
-When you import multiple technical papers, PDFs, or books into the application, raw character counts quickly exceed two million (over 500,000 tokens). In addition, dumping unranked context into a prompt causes lost-in-the-middle degradation where the model overlooks critical facts.
-
-Research Notebook provides a character budget slider in the sidebar (configurable from 4,000 to 2,000,000 characters). When querying:
-1. `src/pack.py` uses embedded Qdrant with `BAAI/bge-small-en-v1.5` embeddings to rank every source chunk by cosine similarity to your query.
-2. The packer collects the highest-scoring chunks until the character cap is reached.
-3. Estimated tokens are calculated and labeled as `chars // 4 (estimate)`.
-4. Only relevant chunks enter the prompt, keeping the context dense and within safe token bounds.
-
-## Optional web search (default OFF)
-
-A sidebar checkbox lets you toggle DuckDuckGo web search. The web search module is **default OFF**.
-
-When enabled, the search module runs in an isolated pipeline:
-- It returns at most 3 snippets.
-- Results are appended to the prompt under the strict `web:` prefix.
-- Web snippets are never saved to `data/sources/` and never written to Qdrant.
-
-This isolation guarantees external web text cannot pollute your canonical uploaded source index.
-
-## Directory structure
-
-```
-research-notebook/
-├── app.py                 # Streamlit application with Notebook/Sources/Ask/Brief tabs
-├── client.py              # Root provider discovery alias
-├── sources_manager.py     # Source loading, extraction (PyMuPDF/pypdf), and JSONL persistence
-├── synthesis.py           # Grounded Q&A, citations list, and brief synthesis
-├── web_search.py          # Isolated DuckDuckGo search module (default OFF)
-├── run.cmd                # One-click Windows 11 launcher
-├── requirements.txt       # Python dependencies
-├── STATUS.md              # Implementation and verification log
-├── LICENSE                # MIT license
-├── src/
-│   ├── __init__.py
-│   ├── agnes_client.py    # Agnes AI client configuration (agnes-3.0-flash)
-│   └── pack.py            # Embedded Qdrant chunk ranking and context packer
-├── docs/
-│   ├── ARCHITECTURE.md    # System architecture, Qdrant payload schema, and data flow
-│   └── CITATIONS.md       # Quote span structure and verification guide
-└── data/
-    ├── briefs/            # Saved markdown research briefs
-    ├── cache/             # Saved last_ask.json and last_brief.md
-    ├── fixtures/          # Test reference documents (paper_a.txt, paper_b.txt)
-    ├── qdrant/            # Local embedded Qdrant vector database
-    └── sources/           # Canonical JSONL source records (sources.jsonl)
+```cmd
+py -3 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\streamlit run app.py --server.port=8591
 ```
 
-## Running tests
+The `.env.example` file contains variable names only. Keep `AGNESAI_API_KEY` in the Windows user environment, not in `.env`, source files, or Git.
 
-Run the end-to-end smoke test suite from PowerShell:
+The launcher uses `http://localhost:8591`. Before it starts the app, it stops
+the process currently listening on port 8591 so a repeat launch restarts the
+notebook cleanly.
 
-```powershell
-.\.venv\Scripts\python.exe tests/smoke_e2e.py
+## Workflow
+
+- Health reports whether the Agnes key is set and can list local Ollama models.
+- Sources accepts pasted text and PDF, TXT, or Markdown uploads. Each upload is stored in its own JSON file under `data/sources/`.
+- Notebook shows source and context-budget statistics.
+- Ask retrieves Qdrant chunks, packs them within the selected character budget, and asks `agnes-3.0-flash` to answer from that evidence.
+- Brief creates Markdown with Claims, Evidence, Gaps, and Follow-ups.
+
+Token counts shown in the UI are estimates calculated as `chars / 4`.
+
+## Local Qdrant
+
+The app uses embedded `qdrant-client` storage at `data/qdrant`, collection `sources`. Embedded Qdrant permits one process to use that path at a time. Close other scripts or apps using `data/qdrant` before starting another operation.
+
+## Optional web search
+
+Web search is off by default. When enabled, `ddgs` returns at most three snippets. The app appends them after uploaded chunks, labels them `web:`, and never saves or indexes them as sources. A library or network failure shows a warning and leaves the app running.
+
+## PDF and optional OCR
+
+PDF inspection uses the locally installed `pdf-inspector` Python package. It is not Firecrawl Cloud and does not send PDFs to Firecrawl.
+
+Native PDFs use the Markdown returned by `pdf_inspector.process_pdf`. OCR runs only for PDFs routed to OCR when the configured Ollama service and model are available. It uses `pypdfium2` PNG pages and `AuditAid/PaddleOCR-VL-1.6-0.9B`. If Ollama or the model is unavailable, the app skips affected pages, retains native text, and shows a warning on Sources.
+
+See [PDF_AND_OCR.md](docs/PDF_AND_OCR.md) for routing details.
+
+## Development
+
+For a short change-and-verify checklist, see the
+[Contributor runbook](CONTRIBUTING.md). For setup, the zero-to-mastery
+walkthrough, public Python interfaces, and troubleshooting, see the
+[Developer Guide](docs/DEVELOPER_GUIDE.md).
+
+## Verification scripts
+
+```cmd
+.venv\Scripts\python scripts\smoke_ingest.py
+.venv\Scripts\python scripts\smoke_ask.py
+.venv\Scripts\python scripts\smoke_web.py
+.venv\Scripts\python scripts\smoke_pdf_optional.py
 ```
 
-The test loads fixtures (`paper_a.txt`, `paper_b.txt`), indexes chunks in embedded Qdrant with payload `{source_id, chunk_id, text}`, verifies an Ask query only `paper_a` answers, confirms `data/cache/last_ask.json` and `data/cache/last_brief.md` exist, and validates the optional Web ON path with `web:` labels.
+The PDF smoke is optional. If `data/fixtures/text.pdf` is absent, it records a skipped result instead of failing.
 
-## License
+## Local data
 
-This project is licensed under the [MIT License](LICENSE).
+Runtime data is stored under `data/` and ignored by Git:
+
+- `data/sources/`: individual source JSON records
+- `data/qdrant/`: embedded vector store
+- `data/briefs/`: timestamped research briefs
+- `data/cache/`: latest smoke and application artifacts
+- `data/pages/`: temporary OCR page images

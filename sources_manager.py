@@ -1,26 +1,18 @@
-"""Sources management and context packing module.
+"""Compatibility JSONL source utilities and the Notebook summary packer.
 
-Handles:
-- Storing and loading sources from data/sources/sources.jsonl
-- Extracting text from PDF, TXT, MD, and web URLs
-- Packing sources against a character budget for Agnes 512K context window
-- Calculating estimated token counts (chars / 4)
+The active Sources page persists individual JSON records through ``src.ingest``.
+This module remains for compatibility with legacy callers and for
+``pack_sources_for_context``, which powers the Notebook overview.
 """
 
 from __future__ import annotations
 
-import io
 import json
-import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-import requests
-from bs4 import BeautifulSoup
-from pypdf import PdfReader
+from typing import Any, Dict, List, Optional
 
 DEFAULT_SOURCES_DIR = Path("data/sources")
 DEFAULT_SOURCES_FILE = DEFAULT_SOURCES_DIR / "sources.jsonl"
@@ -28,6 +20,20 @@ DEFAULT_SOURCES_FILE = DEFAULT_SOURCES_DIR / "sources.jsonl"
 
 @dataclass
 class SourceItem:
+    """Legacy JSONL source record used by compatibility callers.
+
+    Attributes:
+        id: UUID string identifying the source.
+        title: Human-readable source title.
+        source_type: Origin label such as ``paste`` or ``upload``.
+        content: Full source text.
+        char_count: Number of characters in ``content``.
+        est_tokens: Character-based token estimate (``char_count // 4``).
+        created_at: UTC ISO 8601 creation timestamp.
+        filename: Optional uploaded filename.
+        url: Optional legacy URL source.
+        metadata: Additional compatibility metadata.
+    """
     id: str
     title: str
     source_type: str  # "paste", "upload", "url"
@@ -41,13 +47,27 @@ class SourceItem:
 
 
 def ensure_storage_dir(sources_file: Path = DEFAULT_SOURCES_FILE) -> Path:
-    """Ensure data/sources directory exists and return target JSONL path."""
+    """Ensure the parent directory for a legacy JSONL file exists.
+
+    Args:
+        sources_file: JSONL file whose parent directory is created.
+
+    Returns:
+        The unchanged target JSONL path.
+    """
     sources_file.parent.mkdir(parents=True, exist_ok=True)
     return sources_file
 
 
 def load_sources(sources_file: Path = DEFAULT_SOURCES_FILE) -> List[SourceItem]:
-    """Load all source items from the JSONL storage."""
+    """Load valid legacy source records from a JSONL file.
+
+    Args:
+        sources_file: Legacy JSONL source file to read.
+
+    Returns:
+        Parsed source records; malformed lines are skipped.
+    """
     ensure_storage_dir(sources_file)
     if not sources_file.exists():
         return []
@@ -67,8 +87,12 @@ def load_sources(sources_file: Path = DEFAULT_SOURCES_FILE) -> List[SourceItem]:
                         source_type=data.get("source_type", "paste"),
                         content=data.get("content", ""),
                         char_count=data.get("char_count", len(data.get("content", ""))),
-                        est_tokens=data.get("est_tokens", len(data.get("content", "")) // 4),
-                        created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+                        est_tokens=data.get(
+                            "est_tokens", len(data.get("content", "")) // 4
+                        ),
+                        created_at=data.get(
+                            "created_at", datetime.now(timezone.utc).isoformat()
+                        ),
                         filename=data.get("filename"),
                         url=data.get("url"),
                         metadata=data.get("metadata", {}),
@@ -79,8 +103,15 @@ def load_sources(sources_file: Path = DEFAULT_SOURCES_FILE) -> List[SourceItem]:
     return items
 
 
-def save_sources(items: List[SourceItem], sources_file: Path = DEFAULT_SOURCES_FILE) -> None:
-    """Save the complete list of source items back to JSONL."""
+def save_sources(
+    items: List[SourceItem], sources_file: Path = DEFAULT_SOURCES_FILE
+) -> None:
+    """Replace a legacy JSONL file with the supplied source records.
+
+    Args:
+        items: Source records to serialize, one JSON object per line.
+        sources_file: Legacy JSONL destination.
+    """
     ensure_storage_dir(sources_file)
     temp_file = sources_file.with_suffix(".tmp")
     with open(temp_file, "w", encoding="utf-8") as f:
@@ -98,7 +129,20 @@ def add_source(
     metadata: Optional[Dict[str, Any]] = None,
     sources_file: Path = DEFAULT_SOURCES_FILE,
 ) -> SourceItem:
-    """Add a new source item and persist to JSONL."""
+    """Create and prepend a legacy JSONL source record.
+
+    Args:
+        title: Display title; a filename or fallback title is used when empty.
+        content: Source text to store.
+        source_type: Legacy origin label.
+        filename: Optional uploaded filename.
+        url: Optional legacy source URL.
+        metadata: Optional extra metadata stored with the record.
+        sources_file: Legacy JSONL destination.
+
+    Returns:
+        The newly persisted source record.
+    """
     cleaned_content = content.strip()
     char_count = len(cleaned_content)
     est_tokens = char_count // 4
@@ -123,7 +167,15 @@ def add_source(
 
 
 def delete_source(source_id: str, sources_file: Path = DEFAULT_SOURCES_FILE) -> bool:
-    """Remove a source item by ID."""
+    """Remove one legacy JSONL record by ID.
+
+    Args:
+        source_id: Source UUID to remove.
+        sources_file: Legacy JSONL file to update.
+
+    Returns:
+        ``True`` when a record was removed, otherwise ``False``.
+    """
     items = load_sources(sources_file)
     initial_len = len(items)
     filtered = [item for item in items if item.id != source_id]
@@ -134,7 +186,11 @@ def delete_source(source_id: str, sources_file: Path = DEFAULT_SOURCES_FILE) -> 
 
 
 def clear_sources(sources_file: Path = DEFAULT_SOURCES_FILE) -> None:
-    """Clear all sources from JSONL."""
+    """Clear every record from a legacy JSONL source file.
+
+    Args:
+        sources_file: Legacy JSONL file to replace with an empty file.
+    """
     save_sources([], sources_file)
 
 
@@ -142,66 +198,41 @@ def clear_sources(sources_file: Path = DEFAULT_SOURCES_FILE) -> None:
 # Content Extraction Helpers
 # ---------------------------------------------------------------------------
 
-def extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract plain text from PDF bytes using pymupdf with pypdf fallback."""
-    try:
-        import fitz  # PyMuPDF
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        extracted_pages: List[str] = []
-        for idx, page in enumerate(doc):
-            text = page.get_text() or ""
-            if text.strip():
-                extracted_pages.append(f"--- Page {idx + 1} ---\n{text.strip()}")
-        doc.close()
-        if extracted_pages:
-            return "\n\n".join(extracted_pages)
-    except Exception:
-        pass
-
-    reader = PdfReader(io.BytesIO(file_bytes))
-    extracted_pages: List[str] = []
-    for idx, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        if text.strip():
-            extracted_pages.append(f"--- Page {idx + 1} ---\n{text.strip()}")
-    return "\n\n".join(extracted_pages)
-
 
 def extract_text_from_txt(file_bytes: bytes) -> str:
-    """Decode raw txt/md bytes into unicode string."""
+    """Decode TXT or Markdown bytes with a Latin-1 fallback.
+
+    Args:
+        file_bytes: Raw file content.
+
+    Returns:
+        Decoded text, replacing undecodable Latin-1 characters when needed.
+    """
     try:
         return file_bytes.decode("utf-8")
     except UnicodeDecodeError:
         return file_bytes.decode("latin-1", errors="replace")
 
 
-def fetch_url_text(url: str, timeout: int = 12) -> Tuple[str, str]:
-    """Fetch URL and extract readable title and body text."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
-    }
-    resp = requests.get(url, headers=headers, timeout=timeout)
-    resp.raise_for_status()
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    # Remove script, style, and navigation tags
-    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-        tag.decompose()
-
-    title = (soup.title.string.strip() if soup.title and soup.title.string else url)
-
-    # Extract body paragraphs and text
-    text = soup.get_text(separator="\n", strip=True)
-    return title, text
-
-
 # ---------------------------------------------------------------------------
 # Context Packing for Agnes 512K Window
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PackedContextResult:
+    """Greedy whole-source packing result for the Notebook overview.
+
+    Attributes:
+        budget_chars: Configured character ceiling.
+        budget_tokens: Estimated token ceiling (``budget_chars // 4``).
+        packed_chars: Characters included in ``full_text``.
+        packed_tokens: Estimated tokens included.
+        packed_sources: Sources retained under the budget.
+        excluded_sources: Sources omitted because they exceeded the budget.
+        utilization_pct: Percentage of the character budget consumed.
+        full_text: Formatted packed source text.
+    """
     budget_chars: int
     budget_tokens: int
     packed_chars: int
@@ -216,9 +247,14 @@ def pack_sources_for_context(
     sources: List[SourceItem],
     char_budget: int,
 ) -> PackedContextResult:
-    """Pack sources greedily into the specified character budget.
+    """Pack complete legacy source records greedily into a character budget.
 
-    Calculates tokens as approx chars // 4.
+    Args:
+        sources: Ordered source records to consider.
+        char_budget: Maximum formatted character count.
+
+    Returns:
+        Included and excluded records plus character and token estimates.
     """
     packed: List[SourceItem] = []
     excluded: List[SourceItem] = []

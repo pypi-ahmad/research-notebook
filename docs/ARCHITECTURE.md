@@ -1,101 +1,93 @@
 # Architecture
 
-Research Notebook is a local research workbench running on native Windows 11. It ingests documents, stores them locally, ranks chunks through an embedded vector store, and synthesizes answers with the Agnes AI API.
+Research Notebook runs as one native Windows Streamlit process. It keeps sources and Qdrant local, adds web results only when requested, and uses Agnes AI for generation.
 
-## System overview
+## Data flow
 
-The application has five main components:
-
-1. Web interface (`app.py`): Streamlit dashboard with four tabs: Notebook, Sources, Ask, and Brief.
-2. Source storage (`sources_manager.py`): JSON Lines file storage at `data/sources/sources.jsonl`. Supports text paste, PDF via PyMuPDF/pypdf, plain text, Markdown, and web scraping.
-3. Vector index and packer (`src/pack.py`): Local embedded Qdrant database at `data/qdrant` with local embeddings (`BAAI/bge-small-en-v1.5`).
-4. Model client (`src/agnes_client.py` & `client.py`): OpenAI SDK client configured for Agnes AI (`https://apihub.agnes-ai.com/v1`) with optional OpenAI and Google fallbacks.
-5. Synthesis engine (`synthesis.py`): Grounded question answering, citations list extraction, and research brief generation. Caches recent runs to `data/cache/last_ask.json` and `data/cache/last_brief.md`.
-
-```
-[User Input] (PDF / TXT / MD / URL / Paste)
-       │
-       ▼
-[sources_manager.py] ──> data/sources/sources.jsonl
-       │
-       ▼
-  [src/pack.py] (Chunking: 700 chars, 100 overlap)
-       │
-       ▼
- [Embedded Qdrant] ──> data/qdrant/ (Payload: {source_id, chunk_id, text})
-       │
-       ├── Query Ranking (Cosine similarity via BAAI/bge-small-en-v1.5)
-       ▼
-[Context Window Packer] (Respects character budget slider)
-       │
-       ├── Optional Web Snippets (Max 3, labeled web:, default OFF)
-       ▼
- [synthesis.py] ──> Agnes API (agnes-3.0-flash)
-       │
-       ├── Ask tab (Answers with [source_id: "quote"] + citations list ──> data/cache/last_ask.json)
-       └── Brief tab (Structured markdown saved to data/briefs/ and data/cache/last_brief.md)
+```text
+Paste / TXT / MD ───────────────┐
+                                ├─> src/ingest.py ─> data/sources/<source_id>.json
+PDF ─> pdf-inspector ─> routing ┘                         │
+                                                          ▼
+                                      chunk (~1000 chars, 150 overlap)
+                                                          │
+                                                          ▼
+                                      embedded Qdrant: data/qdrant
+                                                          │
+Question ─> retrieve top k ─> pack uploaded chunks to character budget
+                                                          │
+Optional DDGS, OFF by default ─> append up to 3 web snippets last
+                                                          │
+                           src/ask.py or src/brief.py ─> Agnes AI
 ```
 
-## Data ingestion
+## Components
 
-Users add text through the Sources tab using three methods:
-- Direct text pasting.
-- File uploads for PDF, plain text, and Markdown files. PDF extraction uses PyMuPDF (`fitz`) with a `pypdf` fallback.
-- Web URL fetching. The scraper fetches HTML and extracts text with `BeautifulSoup`.
+- `app.py`: Health, Sources, Notebook, Ask, and Brief pages plus sidebar controls.
+- `src/ingest.py`: individual source JSON persistence, PDF/TXT/MD extraction, Qdrant upsert, counts, and deletion.
+- `src/pdf_engine.py`: `pdf_inspector.process_pdf` inspection and optional Ollama OCR routing.
+- `src/pack.py`: deterministic 384-dimensional local hash vectors, Qdrant retrieval, and character-budget packing.
+- `src/web_search.py`: DDGS search returning at most three `origin=web` hits or an error string.
+- `src/ask.py`: evidence-only Agnes prompt, citation verification, and `last_ask.json` persistence.
+- `src/brief.py`: grounded four-section Markdown brief generation and persistence.
+- `src/agnes_client.py`: official OpenAI SDK client, Agnes base URL, model, and HTTP 429 retry handling.
 
-Each record gets a UUID, title, source type, timestamp, character count, and token estimate (`chars // 4`). Records append to `data/sources/sources.jsonl`.
+## Source storage
 
-## Chunking and Qdrant payload schema
+Each source is stored at `data/sources/<source_id>.json` with these core fields:
 
-`src/pack.py` splits source documents into overlapping chunks. Default chunk size is 700 characters with a 100-character overlap.
-
-Chunks are indexed in embedded Qdrant using `qdrant-client` with `path="data/qdrant"`. No external server or Docker container is used. Embeddings come from `fastembed` using the `BAAI/bge-small-en-v1.5` model, generating 384-dimensional dense vectors.
-
-Every point in Qdrant contains the following payload schema:
-```python
+```json
 {
-    "source_id": "6f21e5df-08d1-4191-88fc-d2e8e788bc53",
-    "chunk_id": "6f21e5df-08d1-4191-88fc-d2e8e788bc53_0",
-    "text": "The Chronos engine employs dedicated sink tokens...",
-    "title": "Chronos Engine: KV Cache Retention",
-    "source_type": "upload",
-    "chunk_index": 0,
-    "char_count": 684,
-    "est_tokens": 171
+  "id": "uuid",
+  "title": "Paper title",
+  "text": "Extracted or pasted text",
+  "origin": "upload"
 }
 ```
 
-When a user submits a query:
-1. The query text is converted to a 384-dimensional dense vector.
-2. Qdrant performs cosine similarity search against indexed chunks.
-3. Chunks are returned sorted by similarity score.
+PDF sources additionally store `pdf_type` and `route` so the Sources page can display the inspection decision. Web results are never written here.
 
-## Context window packing and the 512K model limit
+## Qdrant
 
-The default model, `agnes-3.0-flash`, accepts up to 512,000 tokens in its context window. However, relying on the model window alone fails when users upload extensive collections of papers or long reference documents.
+Embedded Qdrant uses `path="data/qdrant"` and collection `sources`. One process must own the path. Every point includes at least:
 
-Several practical limits make selective packing necessary:
-1. Volume: A dozen full-length academic papers or technical manuals easily total 2,000,000 characters (roughly 500,000 tokens). Adding more files exceeds even a 512K window.
-2. Quality: Large context windows suffer from attention degradation when irrelevant text dilutes relevant evidence. Placing hundreds of pages of unranked context into the prompt increases the risk of missed details.
-3. Cost and latency: Passing hundreds of thousands of tokens per prompt increases inference time and API resource consumption.
+```json
+{
+  "source_id": "uuid",
+  "chunk_id": "uuid_0",
+  "text": "Chunk text",
+  "origin": "upload"
+}
+```
 
-To solve this, `src/pack.py` ranks chunks by similarity and packs only the top-scoring passages until it reaches the user-selected character budget cap. The slider in the sidebar lets the user configure this cap between 4,000 and 2,000,000 characters. Token counts are estimated as character count divided by 4.
+The query uses the same deterministic local hash function. Qdrant returns the top `k` candidates. The packer adds uploaded chunks in score order until it reaches the character budget, then returns the packed text and `{source_id, chunk_id}` entries.
 
-## Web search isolation (default OFF)
+If web search is enabled, web snippets are appended only after uploaded chunks under a separate `origin=web` header. They are not Qdrant points.
 
-The application includes an optional web search toggle in the sidebar, defaulted to **OFF**. When active, queries run through DuckDuckGo via the `ddgs` library.
+## Generation
 
-The web module has two safety limits:
-- It returns at most 3 snippets.
-- Results are labeled `web:` in the prompt and UI.
+The official `openai` SDK targets:
 
-Web results are never written to `data/sources/sources.jsonl` and never indexed in Qdrant. This keeps the primary document collection isolated from third-party web content.
+- Base URL: `https://apihub.agnes-ai.com/v1`
+- Model: `agnes-3.0-flash`
+- Key: Windows user environment variable `AGNESAI_API_KEY`
 
-## Model provider configuration
+Ask tells Agnes to use packed evidence only and verifies quoted citations against retrieved chunk text. Brief uses these headings:
 
-`src/agnes_client.py` uses the official `openai` Python SDK. It reads configuration from environment variables:
-- Default: `AGNESAI_API_KEY` with base URL `https://apihub.agnes-ai.com/v1` and model `agnes-3.0-flash`.
-- Optional: `OPENAI_API_KEY` and `OPENAI_BASE_URL` for OpenAI models (`gpt-5.6-luna`, `gpt-5.6-terra`).
-- Optional: `GOOGLE_API_KEY` for Google models (`gemini-3.5-flash-l`).
+```markdown
+## Claims
+## Evidence
+## Gaps
+## Follow-ups
+```
 
-If an optional environment variable is absent, the corresponding provider is excluded from the UI dropdown.
+## Runtime boundaries
+
+- Native Windows 11 only; no WSL2 or Docker.
+- No remote vector database or downloaded embedding model.
+- Web search defaults to OFF.
+- `pdf-inspector` runs locally and is unrelated to Firecrawl Cloud.
+- Ollama is contacted only for health checks or a PDF routed to OCR.
+
+For implementation entry points and verification guidance, see the
+[Developer Guide](DEVELOPER_GUIDE.md).

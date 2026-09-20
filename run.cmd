@@ -1,36 +1,23 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0"
 
 if not exist .env (
-    if exist .env.example (
-        echo Initializing .env from .env.example...
-        copy .env.example .env >nul
-        start notepad .env
-        echo .env created from .env.example. Please review keys in Notepad and run run.cmd again.
-        exit /b 0
-    )
+    copy .env.example .env >nul
+    start "" notepad.exe .env
+    exit /b 0
 )
 
 if not exist .venv (
-    echo Creating .venv with py -3...
-    py -3.14 -m venv .venv 2>nul || py -3 -m venv .venv
-    if errorlevel 1 (
-        echo Error: Failed to create virtual environment with py -3.
-        pause
-        exit /b 1
-    )
+    py -3 -m venv .venv || exit /b 1
 )
 
-call .venv\Scripts\activate.bat
+.venv\Scripts\pip install -r requirements.txt || exit /b 1
 
-echo Installing/verifying requirements from requirements.txt...
-python -m pip install -r requirements.txt
-if errorlevel 1 (
-    echo Error: Failed to install requirements.
-    pause
-    exit /b 1
+set "STREAMLIT_PORT=8591"
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%STREAMLIT_PORT% .*LISTENING"') do (
+    echo Stopping the process listening on port %STREAMLIT_PORT% (PID %%P)...
+    taskkill /F /PID %%P >nul 2>&1
 )
 
-echo Starting Streamlit application...
-streamlit run app.py
+.venv\Scripts\streamlit run app.py --server.port=%STREAMLIT_PORT%

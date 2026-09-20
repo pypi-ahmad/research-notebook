@@ -1,45 +1,26 @@
-"""Isolated web search module using DuckDuckGo Search (ddgs).
+"""Compatibility wrapper for optional DDGS web search.
 
-Default is OFF in the Streamlit application.
-Returns clean structured search results without crashing on network or rate limit issues.
+New code should use ``src.web_search.search_web`` to receive both hits and an
+error message. This wrapper preserves the legacy list-only interface.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, List
 
-logger = logging.getLogger(__name__)
+from src.web_search import search_web as _search_web
 
 
 def search_web(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-    """Execute search query using ddgs and return list of results.
+    """Return normalized web hits through the legacy list-only interface.
+
+    Args:
+        query: Search query text.
+        max_results: Requested maximum; the active implementation caps it at 3.
 
     Returns:
-        List[Dict[str, Any]]: List of dicts with 'title', 'href', 'body'.
+        Hit dictionaries with ``title``, ``href``, ``text``, ``origin``, and
+        legacy ``body`` keys. Returns an empty list when search fails.
     """
-    if not query or not query.strip():
-        return []
-
-    try:
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-
-        with DDGS() as ddgs:
-            raw_results = list(ddgs.text(query.strip(), max_results=max_results))
-
-        results: List[Dict[str, Any]] = []
-        for r in raw_results:
-            results.append(
-                {
-                    "title": r.get("title", "Untitled"),
-                    "href": r.get("href", r.get("link", "")),
-                    "body": r.get("body", r.get("snippet", "")),
-                }
-            )
-        return results
-    except Exception as exc:
-        logger.warning("Web search failed: %s", exc)
-        return []
+    hits, _error = _search_web(query, max_results=max_results)
+    return [hit | {"body": hit["text"]} for hit in hits]
