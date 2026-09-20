@@ -8,18 +8,18 @@ from __future__ import annotations
 from src.agnes_client import (
     DEFAULT_AGNES_BASE_URL,
     DEFAULT_AGNES_MODEL,
-    GOOGLE_OPENAI_BASE_URL,
     ProviderInfo,
+    build_client,
+    call_chat_completion_with_retry,
     get_agnes_client,
     get_available_providers,
-    build_client,
 )
 
 __all__ = [
     "DEFAULT_AGNES_BASE_URL",
     "DEFAULT_AGNES_MODEL",
-    "GOOGLE_OPENAI_BASE_URL",
     "ProviderInfo",
+    "call_chat_completion_with_retry",
     "get_agnes_client",
     "get_available_providers",
     "build_client",

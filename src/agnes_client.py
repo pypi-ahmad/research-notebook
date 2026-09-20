@@ -1,30 +1,38 @@
-"""Agnes AI client initialization and provider routing.
+"""Agnes AI client initialization.
 
 Follows project rules:
 - Chat completions via official openai SDK.
 - Default provider: Agnes AI with model agnes-3.0-flash and base URL https://apihub.agnes-ai.com/v1.
 - AGNESAI_API_KEY sourced from user environment variables only (never logged or committed).
-- Optional providers (OpenAI, Google) exposed only if required environment variables are set.
 - No API calls triggered during client creation.
 """
 
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-from dotenv import load_dotenv
-from openai import OpenAI
+from typing import Any, Dict, List, Tuple
 
-load_dotenv(override=False)
+from openai import OpenAI, RateLimitError
 
-DEFAULT_AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
-DEFAULT_AGNES_MODEL = "agnes-3.0-flash"
-GOOGLE_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+from src.config import AGNES_BASE_URL, AGNES_MODEL
+
+DEFAULT_AGNES_BASE_URL = AGNES_BASE_URL
+DEFAULT_AGNES_MODEL = AGNES_MODEL
 
 
 @dataclass
 class ProviderInfo:
+    """Configuration exposed for an available language-model provider.
+
+    Attributes:
+        id: Stable provider identifier accepted by ``build_client``.
+        display_name: Human-readable name for UI display.
+        base_url: OpenAI-compatible API base URL.
+        models: Models selectable for the provider.
+        default_model: Model used when callers do not override it.
+    """
     id: str
     display_name: str
     base_url: str
@@ -33,75 +41,82 @@ class ProviderInfo:
 
 
 def get_agnes_client() -> Tuple[OpenAI, str]:
-    """Return a configured OpenAI SDK client instance for Agnes AI and the default model name.
-    
+    """Return a configured Agnes SDK client and its default model name.
+
+    Returns:
+        OpenAI-compatible client configured for Agnes and ``agnes-3.0-flash``.
+
     Raises:
         ValueError: If AGNESAI_API_KEY is not set.
     """
     api_key = os.environ.get("AGNESAI_API_KEY")
     if not api_key:
         raise ValueError("AGNESAI_API_KEY is not set in environment.")
-    base_url = os.environ.get("AGNESAI_BASE_URL", DEFAULT_AGNES_BASE_URL)
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = OpenAI(api_key=api_key, base_url=DEFAULT_AGNES_BASE_URL, timeout=120.0)
     return client, DEFAULT_AGNES_MODEL
 
 
 def get_available_providers() -> Dict[str, ProviderInfo]:
-    """Inspect environment and return active providers whose keys exist."""
-    providers: Dict[str, ProviderInfo] = {}
+    """Return the Agnes provider only when its environment key is available.
 
-    agnes_key = os.environ.get("AGNESAI_API_KEY")
-    if agnes_key:
-        providers["agnes"] = ProviderInfo(
+    Returns:
+        Mapping from provider ID to configuration. The mapping is empty when
+        ``AGNESAI_API_KEY`` is absent.
+    """
+    if not os.environ.get("AGNESAI_API_KEY"):
+        return {}
+    return {
+        "agnes": ProviderInfo(
             id="agnes",
-            display_name="Agnes AI (Default)",
-            base_url=os.environ.get("AGNESAI_BASE_URL", DEFAULT_AGNES_BASE_URL),
-            models=["agnes-3.0-flash"],
-            default_model="agnes-3.0-flash",
+            display_name="Agnes AI",
+            base_url=DEFAULT_AGNES_BASE_URL,
+            models=[DEFAULT_AGNES_MODEL],
+            default_model=DEFAULT_AGNES_MODEL,
         )
-
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    openai_base = os.environ.get("OPENAI_BASE_URL")
-    if openai_key and openai_base:
-        providers["openai"] = ProviderInfo(
-            id="openai",
-            display_name="OpenAI Custom",
-            base_url=openai_base.rstrip("/"),
-            models=["gpt-5.6-luna", "gpt-5.6-terra"],
-            default_model="gpt-5.6-luna",
-        )
-
-    google_key = os.environ.get("GOOGLE_API_KEY")
-    if google_key:
-        providers["google"] = ProviderInfo(
-            id="google",
-            display_name="Google Gemini",
-            base_url=GOOGLE_OPENAI_BASE_URL,
-            models=["gemini-3.5-flash-l"],
-            default_model="gemini-3.5-flash-l",
-        )
-
-    return providers
+    }
 
 
 def build_client(provider_id: str = "agnes") -> Tuple[OpenAI, str]:
-    """Construct an OpenAI client for the given provider without making any network calls."""
-    if provider_id == "agnes":
-        return get_agnes_client()
+    """Construct an Agnes SDK client without making a network request.
 
-    providers = get_available_providers()
-    if provider_id not in providers:
-        raise ValueError(
-            f"Provider '{provider_id}' is not configured or missing required environment variables."
-        )
+    Args:
+        provider_id: Supported provider identifier; only ``agnes`` is valid.
 
-    info = providers[provider_id]
-    if provider_id == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY")
-    elif provider_id == "google":
-        api_key = os.environ.get("GOOGLE_API_KEY")
-    else:
+    Returns:
+        Configured OpenAI-compatible client and its default model name.
+
+    Raises:
+        ValueError: If the provider is unsupported or the Agnes key is absent.
+    """
+    if provider_id != "agnes":
         raise ValueError(f"Unsupported provider: {provider_id}")
+    return get_agnes_client()
 
-    client = OpenAI(api_key=api_key, base_url=info.base_url)
-    return client, info.default_model
+
+def call_chat_completion_with_retry(
+    client: OpenAI, max_retries: int = 5, **kwargs: Any
+) -> Any:
+    """Call Chat Completions with bounded retry for HTTP 429 responses.
+
+    Args:
+        client: Configured OpenAI-compatible client.
+        max_retries: Maximum attempts, including the first request.
+        **kwargs: Keyword arguments passed to ``chat.completions.create``.
+
+    Returns:
+        The SDK chat-completion response.
+
+    Raises:
+        RateLimitError: If the final attempt is rate limited.
+    """
+    delay = 8.0
+    for attempt in range(max_retries):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except RateLimitError:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.5, 30.0)
+
+    raise RuntimeError("Chat completion retry loop ended unexpectedly.")
